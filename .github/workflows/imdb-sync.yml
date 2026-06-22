@@ -1,0 +1,62 @@
+name: IMDB Watch History Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload:
+        description: "JSON payload from browser scraper"
+        required: true
+        type: string
+
+jobs:
+  save-history:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Parse and save watch history
+        run: |
+          echo '${{ github.event.inputs.payload }}' | python3 -c "
+          import json, sys, os
+          from datetime import datetime
+
+          data = json.load(sys.stdin)
+          items = data.get('items', [])
+          scraped_at = data.get('scrapedAt', datetime.utcnow().isoformat())
+
+          print(f'Got {len(items)} items scraped at {scraped_at}')
+
+          os.makedirs('data', exist_ok=True)
+
+          # Load existing history if any
+          history_path = 'data/watch_history.json'
+          if os.path.exists(history_path):
+              with open(history_path) as f:
+                  existing = json.load(f)
+          else:
+              existing = []
+
+          # Merge by imdbId (dedup)
+          existing_ids = {e['imdbId'] for e in existing if 'imdbId' in e}
+          new_items = [i for i in items if i.get('imdbId') not in existing_ids]
+          merged = existing + new_items
+
+          merged.sort(key=lambda x: x.get('watchedDate', ''), reverse=True)
+
+          with open(history_path, 'w') as f:
+              json.dump(merged, f, indent=2)
+
+          print(f'Added {len(new_items)} new items. Total: {len(merged)}')
+          "
+
+      - name: Commit updated history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/watch_history.json
+          git diff --cached --quiet || git commit -m "sync: IMDB watch history update $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
